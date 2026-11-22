@@ -22,8 +22,8 @@ appui long sur la branche (ou « Hey Meta, mets de la musique »)
 ## Garde-fous de coût
 
 - Plafond de dépenses mensuel à fixer dans la console Anthropic (la vraie garantie).
-- Quota de questions par mois dans l'app (300 par défaut).
-- Réponses limitées à 500 jetons, une seule image par question, historique de 6 échanges.
+- Budget mensuel en dollars dans l'app (5 $ par défaut), calculé d'après les tarifs Anthropic.
+- Réponses limitées à 500 jetons ; la caméra n'est utilisée que si Claude en a besoin (outil « regarder »).
 - Compteur mensuel des jetons affiché dans l'app.
 
 ## Installation

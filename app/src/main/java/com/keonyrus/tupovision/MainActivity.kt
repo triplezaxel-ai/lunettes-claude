@@ -217,7 +217,7 @@ private fun ConversationSection(state: UiState, onStart: () -> Unit) {
     }
     val frame = state.frame
     if (frame != null) {
-      Text("Image envoyée avec la question :", style = MaterialTheme.typography.bodySmall)
+      Text("Ce que Claude a regardé :", style = MaterialTheme.typography.bodySmall)
       Image(
           bitmap = frame.asImageBitmap(),
           contentDescription = "Image de la caméra des lunettes",
@@ -333,15 +333,20 @@ private fun ClaudeSection(state: UiState) {
             "environ trois fois plus cher. Opus : le meilleur, nettement plus coûteux.",
         style = MaterialTheme.typography.bodySmall,
     )
-    val limitText = if (state.monthlyLimit > 0) " / ${state.monthlyLimit}" else ""
+    val budgetText = if (state.monthlyBudget > 0) " sur ${state.monthlyBudget} \$" else ""
     Text(
-        "Ce mois-ci : ${state.monthQuestions}$limitText questions · " +
-            "${state.monthInputTokens} jetons envoyés · ${state.monthOutputTokens} reçus",
+        "Ce mois-ci : %.2f \$".format(state.monthCost) + budgetText +
+            " · ${state.monthQuestions} questions",
+    )
+    Text(
+        "${state.monthInputTokens} jetons envoyés · ${state.monthOutputTokens} reçus. " +
+            "Estimation calculée par l'app d'après les tarifs Anthropic.",
+        style = MaterialTheme.typography.bodySmall,
     )
     NumberField(
-        value = state.monthlyLimit,
-        label = "Quota de questions par mois (0 = sans limite)",
-        onChange = { Engine.setMonthlyLimit(it) },
+        value = state.monthlyBudget,
+        label = "Budget mensuel en dollars (0 = sans limite)",
+        onChange = { Engine.setMonthlyBudget(it) },
     )
   }
 }
@@ -405,7 +410,9 @@ private fun SettingsSection(state: UiState) {
     )
     SettingSwitch(
         title = "Photo plutôt qu'image vidéo",
-        subtitle = "Plus nette pour lire un petit texte ou une étiquette, mais plus lente.",
+        subtitle =
+            "Quand Claude regarde : plus nette pour lire un petit texte ou une étiquette, mais " +
+                "plus lente.",
         checked = state.photoMode,
         enabled = !state.running,
         onChange = { Engine.setPhotoMode(it) },

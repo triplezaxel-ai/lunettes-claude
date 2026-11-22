@@ -52,7 +52,8 @@ const val DEFAULT_MODEL = "claude-haiku-5-5"
 val FALLBACK_MODELS: List<String> =
     listOf("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
 
-const val DEFAULT_MONTHLY_LIMIT = 300
+/** Monthly budget in US dollars, the currency Anthropic bills in. */
+const val DEFAULT_MONTHLY_BUDGET = 5
 const val DEFAULT_IDLE_SECONDS = 45
 
 enum class Phase(val label: String) {
@@ -101,13 +102,15 @@ data class UiState(
     val mediaAccess: Boolean = false,
     val triggerPackage: String = MediaWatch.DEFAULT_TRIGGER,
     val log: List<String> = emptyList(),
-    /** Questions allowed per calendar month; 0 means no limit. */
-    val monthlyLimit: Int = DEFAULT_MONTHLY_LIMIT,
+    /** Dollars allowed per calendar month; 0 means no limit. */
+    val monthlyBudget: Int = DEFAULT_MONTHLY_BUDGET,
     /** The conversation stops after this many seconds without a question; 0 means never. */
     val idleSeconds: Int = DEFAULT_IDLE_SECONDS,
     val monthQuestions: Int = 0,
     val monthInputTokens: Long = 0,
     val monthOutputTokens: Long = 0,
+    /** Estimated spend this month, in US dollars. */
+    val monthCost: Double = 0.0,
 )
 
 /**
@@ -181,7 +184,7 @@ object Engine {
               (prefs.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL).let {
                 if (it in FALLBACK_MODELS) it else DEFAULT_MODEL
               },
-          monthlyLimit = prefs.getInt("monthly_limit", DEFAULT_MONTHLY_LIMIT),
+          monthlyBudget = prefs.getInt("monthly_budget", DEFAULT_MONTHLY_BUDGET),
           idleSeconds = prefs.getInt("idle_seconds", DEFAULT_IDLE_SECONDS),
           glassesMic = prefs.getBoolean("glasses_mic", true),
           photoMode = prefs.getBoolean("photo_mode", false),
@@ -275,6 +278,14 @@ object Engine {
 
   private fun monthTag(): String = SimpleDateFormat("yyyy-MM", Locale.US).format(Date())
 
+  /** Dollars per million tokens, input then output, from Anthropic's price list. */
+  private fun prices(model: String): Pair<Double, Double> =
+      when {
+        "opus" in model -> 4.0 to 20.0
+        "sonnet" in model -> 2.0 to 10.0
+        else -> 0.10 to 0.50
+      }
+
   /** Counters reset by themselves when the month changes. */
   private fun refreshUsage() {
     val prefs = prefs()
@@ -286,6 +297,7 @@ object Engine {
           .putInt("usage_questions", 0)
           .putLong("usage_in", 0)
           .putLong("usage_out", 0)
+          .putLong("usage_micro_usd", 0)
           .apply()
     }
     update {
@@ -293,33 +305,41 @@ object Engine {
           monthQuestions = prefs.getInt("usage_questions", 0),
           monthInputTokens = prefs.getLong("usage_in", 0),
           monthOutputTokens = prefs.getLong("usage_out", 0),
+          monthCost = prefs.getLong("usage_micro_usd", 0) / 1_000_000.0,
       )
     }
   }
 
-  private fun recordUsage(usage: Usage) {
+  private fun recordUsage(usage: Usage, model: String, countQuestion: Boolean) {
     refreshUsage()
+    val (inPrice, outPrice) = prices(model)
+    // Prices are per million tokens, so tokens × price is already in micro-dollars.
+    val micro = (usage.inputTokens * inPrice + usage.outputTokens * outPrice).toLong()
     val prefs = prefs()
     prefs
         .edit()
-        .putInt("usage_questions", prefs.getInt("usage_questions", 0) + 1)
+        .putInt("usage_questions", prefs.getInt("usage_questions", 0) + if (countQuestion) 1 else 0)
         .putLong("usage_in", prefs.getLong("usage_in", 0) + usage.inputTokens)
         .putLong("usage_out", prefs.getLong("usage_out", 0) + usage.outputTokens)
+        .putLong("usage_micro_usd", prefs.getLong("usage_micro_usd", 0) + micro)
         .apply()
     refreshUsage()
-    log("Coût de la question : ${usage.inputTokens} jetons envoyés, ${usage.outputTokens} reçus")
+    log(
+        "Appel : ${usage.inputTokens} jetons envoyés, ${usage.outputTokens} reçus, " +
+            "≈ %.4f \$".format(Locale.US, micro / 1_000_000.0),
+    )
   }
 
-  private fun limitReached(): Boolean {
+  private fun budgetReached(): Boolean {
     refreshUsage()
-    val limit = _state.value.monthlyLimit
-    return limit > 0 && _state.value.monthQuestions >= limit
+    val budget = _state.value.monthlyBudget
+    return budget > 0 && _state.value.monthCost >= budget
   }
 
-  fun setMonthlyLimit(value: Int) {
-    val clean = value.coerceIn(0, 100_000)
-    update { it.copy(monthlyLimit = clean) }
-    prefs().edit().putInt("monthly_limit", clean).apply()
+  fun setMonthlyBudget(value: Int) {
+    val clean = value.coerceIn(0, 10_000)
+    update { it.copy(monthlyBudget = clean) }
+    prefs().edit().putInt("monthly_budget", clean).apply()
   }
 
   fun setIdleSeconds(value: Int) {
@@ -811,10 +831,10 @@ object Engine {
   private suspend fun runTurn(question: String) {
     val startedAt = SystemClock.elapsedRealtime()
     lastActivityAt = startedAt
-    if (limitReached()) {
-      fail("Quota mensuel atteint (${_state.value.monthlyLimit} questions). Modifiable dans les réglages.")
+    if (budgetReached()) {
+      fail("Budget mensuel atteint (${_state.value.monthlyBudget} \$). Modifiable dans l'app.")
       update { it.copy(phase = Phase.SPEAKING) }
-      tts?.speak("Quota mensuel de questions atteint.")
+      tts?.speak("Le budget du mois est atteint.")
       awaitSpeechEnd()
       listen()
       return
@@ -827,13 +847,10 @@ object Engine {
           partial = "",
           latencyMs = null,
           error = null,
+          frame = null,
+          frameInfo = "—",
       )
     }
-
-    val jpeg = withContext(Dispatchers.Default) { acquireFrame() }
-    val preview = withContext(Dispatchers.Default) { jpeg?.let { Frames.preview(it) } }
-    update { it.copy(frame = preview, frameInfo = Frames.info) }
-    if (jpeg == null) log("Pas d'image des lunettes, réponse sans photo")
 
     val answer = StringBuilder()
     val chunker = SentenceChunker()
@@ -852,26 +869,61 @@ object Engine {
     try {
       val settings = _state.value
       val key = SecureStore.get(app, CLAUDE_KEY) ?: throw ApiException(401, "Aucune clé Claude")
-      val body =
-          Claude.buildBody(
-              model = settings.model,
-              system = instructions(jpeg != null),
-              history = history.toList(),
-              question = question,
-              jpeg = jpeg,
-              maxTokens = MAX_ANSWER_TOKENS,
-          )
-      Claude.stream(key, body).collect { event ->
-        when (event) {
-          is ClaudeEvent.Text -> {
-            answer.append(event.delta)
-            update { it.copy(answer = answer.toString()) }
-            chunker.push(event.delta).forEach { say(it) }
-          }
-          is ClaudeEvent.Done -> recordUsage(event.usage)
-        }
+      val messages = org.json.JSONArray()
+      for (turn in history) {
+        messages.put(Claude.textMessage("user", turn.question))
+        messages.put(Claude.textMessage("assistant", turn.answer))
       }
+      messages.put(Claude.textMessage("user", question))
+
+      // First call: Claude answers directly, or asks to look through the glasses.
+      var toolId: String? = null
+      var stopReason = ""
+      Claude.stream(key, Claude.buildBody(settings.model, instructions(), messages, MAX_ANSWER_TOKENS))
+          .collect { event ->
+            when (event) {
+              is ClaudeEvent.Text -> {
+                answer.append(event.delta)
+                update { it.copy(answer = answer.toString()) }
+                chunker.push(event.delta).forEach { say(it) }
+              }
+              is ClaudeEvent.ToolUse -> {
+                if (event.name == Claude.LOOK_TOOL) toolId = event.id
+              }
+              is ClaudeEvent.Done -> {
+                stopReason = event.stopReason
+                recordUsage(event.usage, settings.model, countQuestion = true)
+              }
+            }
+          }
       chunker.flush()?.let { say(it) }
+
+      val lookId = toolId
+      if (stopReason == "tool_use" && lookId != null) {
+        log("Claude demande à regarder")
+        update { it.copy(phase = Phase.THINKING) }
+        val jpeg = withContext(Dispatchers.Default) { acquireFrame() }
+        val preview = withContext(Dispatchers.Default) { jpeg?.let { Frames.preview(it) } }
+        update { it.copy(frame = preview, frameInfo = Frames.info) }
+        if (jpeg == null) log("Pas d'image des lunettes")
+        messages.put(Claude.toolCallMessage(answer.toString(), lookId, Claude.LOOK_TOOL))
+        messages.put(Claude.toolResultMessage(lookId, jpeg))
+        if (answer.isNotEmpty()) answer.append(' ')
+        // Second call: the answer, now with the picture.
+        Claude.stream(key, Claude.buildBody(settings.model, instructions(), messages, MAX_ANSWER_TOKENS))
+            .collect { event ->
+              when (event) {
+                is ClaudeEvent.Text -> {
+                  answer.append(event.delta)
+                  update { it.copy(answer = answer.toString()) }
+                  chunker.push(event.delta).forEach { say(it) }
+                }
+                is ClaudeEvent.ToolUse -> Unit
+                is ClaudeEvent.Done -> recordUsage(event.usage, settings.model, countQuestion = false)
+              }
+            }
+        chunker.flush()?.let { say(it) }
+      }
 
       val text = answer.toString().trim()
       if (text.isNotEmpty()) {
@@ -883,15 +935,27 @@ object Engine {
       throw e
     } catch (e: Exception) {
       val status = (e as? ApiException)?.status ?: 0
+      val detail = e.message.orEmpty()
+      val limit =
+          status == 429 ||
+              detail.contains("usage limit", ignoreCase = true) ||
+              detail.contains("credit balance", ignoreCase = true)
       fail(
-          when (status) {
-            401 -> "Clé API Claude refusée : vérifie-la dans l'app"
-            402, 403 -> "Accès refusé par Anthropic : crédit ou plafond de dépenses atteint ?"
-            429 -> "Trop de requêtes ou plafond atteint côté Anthropic"
-            else -> "Échec de la requête Claude : ${e.message}"
+          when {
+            status == 401 -> "Clé API Claude refusée : vérifie-la dans l'app"
+            limit ->
+                "Plafond de dépenses ou crédit épuisé côté Anthropic (console.anthropic.com → " +
+                    "Settings → Limits / Billing). Détail : $detail"
+            else -> "Échec de la requête Claude : $detail"
           },
       )
-      tts?.speak(spokenError(status))
+      tts?.speak(
+          when {
+            status == 401 -> "Ma clé d'accès est refusée."
+            limit -> "Le plafond de dépenses du compte Anthropic est atteint."
+            else -> "La requête a échoué."
+          },
+      )
       awaitSpeechEnd()
       if (status == 401) {
         shutdown()
@@ -901,14 +965,6 @@ object Engine {
     lastActivityAt = SystemClock.elapsedRealtime()
     listen()
   }
-
-  /** Spoken aloud through the glasses when a question fails. */
-  private fun spokenError(status: Int): String =
-      when (status) {
-        401 -> "Ma clé d'accès est refusée."
-        402, 403, 429 -> "Le plafond de dépenses semble atteint."
-        else -> "La requête a échoué."
-      }
 
   /** Listening must not start while the answer is still playing, or it would hear itself. */
   private suspend fun awaitSpeechEnd() {
@@ -945,26 +1001,17 @@ object Engine {
     return result
   }
 
-  private fun instructions(hasImage: Boolean): String {
-    val picture =
-        if (hasImage) {
-          "Une photo prise à l'instant par la caméra des lunettes accompagne la question : " +
-              "c'est ce que l'utilisateur a devant les yeux. Sers-t'en quand la question porte " +
-              "sur ce qu'il voit, sans la décrire si on ne te le demande pas. Si l'objet de la " +
-              "question n'est pas visible ou pas lisible sur la photo, dis-le."
-        } else {
-          "Aucune image de la caméra n'est disponible. Si la question porte sur ce que " +
-              "l'utilisateur a devant lui, dis que tu ne le vois pas."
-        }
-    return "Tu es Claude, un assistant vocal intégré à des lunettes connectées. L'utilisateur " +
-        "te parle à voix haute et ta réponse lui est lue dans les branches des lunettes. Réponds " +
-        "dans la langue de la question, par défaut en français, en le tutoyant. Sois bref et " +
-        "concret : une à trois phrases, sauf si on te demande plus. Pas de listes, de mise en " +
-        "forme, d'émojis ni de liens ; écris les nombres et unités comme on les prononce. " +
-        "Quand on te demande de l'aide sur une tâche manuelle, donne l'étape suivante à faire, " +
-        "pas toute la procédure. " +
-        picture
-  }
+  private fun instructions(): String =
+      "Tu es Claude, un assistant vocal intégré à des lunettes connectées. L'utilisateur te " +
+          "parle à voix haute et ta réponse lui est lue dans les branches des lunettes. Réponds " +
+          "dans la langue de la question, par défaut en français, en le tutoyant. Sois bref et " +
+          "concret : une à trois phrases, sauf si on te demande plus. Pas de listes, de mise en " +
+          "forme, d'émojis ni de liens ; écris les nombres et unités comme on les prononce. " +
+          "Quand on te demande de l'aide sur une tâche manuelle, donne l'étape suivante à faire, " +
+          "pas toute la procédure. Tu peux regarder ce que l'utilisateur a devant les yeux avec " +
+          "l'outil regarder, mais seulement quand la question l'exige ; dans ce cas, appelle-le " +
+          "directement sans rien dire avant. Ne décris pas l'image si on ne te le demande pas. " +
+          "Si l'objet de la question n'est pas visible ou pas lisible, dis-le."
 
   private fun cleanForSpeech(text: String): String =
       text.replace(Regex("[*#`_>|]"), "").replace(Regex("\\s+"), " ").trim()

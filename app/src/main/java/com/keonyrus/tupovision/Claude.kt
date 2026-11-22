@@ -22,57 +22,81 @@ data class Turn(val question: String, val answer: String)
 /** What one answer cost, as reported by the API. */
 data class Usage(val inputTokens: Int, val outputTokens: Int)
 
-/** Either a piece of the answer or, at the end, the token count. */
+/** A piece of the answer, a request to use a tool, or, at the end, the token count. */
 sealed class ClaudeEvent {
   data class Text(val delta: String) : ClaudeEvent()
-  data class Done(val usage: Usage) : ClaudeEvent()
+  data class ToolUse(val id: String, val name: String) : ClaudeEvent()
+  data class Done(val usage: Usage, val stopReason: String) : ClaudeEvent()
 }
 
 /**
  * The Anthropic Messages API, streamed, with an API key. The key stays on the phone and goes only
- * to api.anthropic.com. Images travel only with the current question; earlier turns are text.
+ * to api.anthropic.com. The camera is a tool: Claude asks for a picture only when it needs one.
  */
 object Claude {
   private const val MESSAGES_URL = "https://api.anthropic.com/v1/messages"
   private const val API_VERSION = "2023-06-01"
+  const val LOOK_TOOL = "regarder"
 
-  fun buildBody(
-      model: String,
-      system: String,
-      history: List<Turn>,
-      question: String,
-      jpeg: ByteArray?,
-      maxTokens: Int,
-  ): JSONObject {
-    val messages = JSONArray()
-    for (turn in history) {
-      messages.put(JSONObject().put("role", "user").put("content", turn.question))
-      messages.put(JSONObject().put("role", "assistant").put("content", turn.answer))
-    }
+  /** The one tool: a picture of what the wearer is looking at, taken when Claude calls it. */
+  fun tools(): JSONArray =
+      JSONArray()
+          .put(
+              JSONObject()
+                  .put("name", LOOK_TOOL)
+                  .put(
+                      "description",
+                      "Prend une photo de ce que l'utilisateur a devant les yeux, avec la caméra " +
+                          "de ses lunettes. À utiliser seulement quand la question porte sur ce " +
+                          "qu'il voit, ce qu'il tient, ce qu'il doit lire, identifier ou réparer " +
+                          "devant lui. Ne pas l'utiliser pour une question générale.",
+                  )
+                  .put("input_schema", JSONObject().put("type", "object").put("properties", JSONObject())),
+          )
+
+  fun textMessage(role: String, text: String): JSONObject =
+      JSONObject().put("role", role).put("content", text)
+
+  fun imageBlock(jpeg: ByteArray): JSONObject =
+      JSONObject()
+          .put("type", "image")
+          .put(
+              "source",
+              JSONObject()
+                  .put("type", "base64")
+                  .put("media_type", "image/jpeg")
+                  .put("data", Base64.encodeToString(jpeg, Base64.NO_WRAP)),
+          )
+
+  /** The assistant turn that asked for the tool, replayed as the API expects it. */
+  fun toolCallMessage(textBefore: String, id: String, name: String): JSONObject {
     val content = JSONArray()
-    if (jpeg != null) {
-      content.put(
-          JSONObject()
-              .put("type", "image")
-              .put(
-                  "source",
-                  JSONObject()
-                      .put("type", "base64")
-                      .put("media_type", "image/jpeg")
-                      .put("data", Base64.encodeToString(jpeg, Base64.NO_WRAP)),
-              ),
-      )
-    }
-    content.put(JSONObject().put("type", "text").put("text", question))
-    messages.put(JSONObject().put("role", "user").put("content", content))
-
-    return JSONObject()
-        .put("model", model)
-        .put("max_tokens", maxTokens)
-        .put("system", system)
-        .put("messages", messages)
-        .put("stream", true)
+    if (textBefore.isNotBlank()) content.put(JSONObject().put("type", "text").put("text", textBefore))
+    content.put(
+        JSONObject().put("type", "tool_use").put("id", id).put("name", name).put("input", JSONObject()),
+    )
+    return JSONObject().put("role", "assistant").put("content", content)
   }
+
+  /** The picture, or the reason there is none, handed back to Claude. */
+  fun toolResultMessage(id: String, jpeg: ByteArray?): JSONObject {
+    val result = JSONObject().put("type", "tool_result").put("tool_use_id", id)
+    if (jpeg != null) {
+      result.put("content", JSONArray().put(imageBlock(jpeg)))
+    } else {
+      result.put("content", "La caméra des lunettes n'a pas pu fournir d'image.").put("is_error", true)
+    }
+    return JSONObject().put("role", "user").put("content", JSONArray().put(result))
+  }
+
+  fun buildBody(model: String, system: String, messages: JSONArray, maxTokens: Int): JSONObject =
+      JSONObject()
+          .put("model", model)
+          .put("max_tokens", maxTokens)
+          .put("system", system)
+          .put("messages", messages)
+          .put("tools", tools())
+          .put("stream", true)
 
   fun stream(apiKey: String, body: JSONObject): Flow<ClaudeEvent> = channelFlow {
     val connectionRef = AtomicReference<HttpURLConnection?>(null)
@@ -98,6 +122,7 @@ object Claude {
 
         var inputTokens = 0
         var outputTokens = 0
+        var stopReason = ""
         connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
           readLoop@ while (true) {
             val line = reader.readLine() ?: break
@@ -116,11 +141,21 @@ object Claude {
                   outputTokens = usage.optInt("output_tokens")
                 }
               }
+              "content_block_start" -> {
+                val block = event.optJSONObject("content_block")
+                if (block?.optString("type") == "tool_use") {
+                  send(ClaudeEvent.ToolUse(block.optString("id"), block.optString("name")))
+                }
+              }
               "content_block_delta" -> {
                 val delta = event.optJSONObject("delta")
-                if (delta?.optString("type") == "text_delta") send(ClaudeEvent.Text(delta.optString("text")))
+                if (delta?.optString("type") == "text_delta") {
+                  send(ClaudeEvent.Text(delta.optString("text")))
+                }
               }
               "message_delta" -> {
+                val reason = event.optJSONObject("delta")?.optString("stop_reason").orEmpty()
+                if (reason.isNotEmpty() && reason != "null") stopReason = reason
                 val usage = event.optJSONObject("usage")
                 if (usage != null && usage.has("output_tokens")) {
                   outputTokens = usage.optInt("output_tokens")
@@ -134,7 +169,7 @@ object Claude {
             }
           }
         }
-        send(ClaudeEvent.Done(Usage(inputTokens, outputTokens)))
+        send(ClaudeEvent.Done(Usage(inputTokens, outputTokens), stopReason))
         close()
       } catch (e: CancellationException) {
         throw e
