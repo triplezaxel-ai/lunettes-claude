@@ -779,6 +779,15 @@ object Engine {
         }
 
         override fun onError(code: Int) {
+          // Some recognizers (Samsung's among them) show the words, then end with an error
+          // instead of a final result. What was heard is still the question: send it.
+          val heard = _state.value.partial.trim()
+          if (heard.isNotEmpty() && code != SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+            log("Reconnaissance vocale : erreur $code après « $heard », envoi quand même")
+            errorStreak = 0
+            onUtterance(heard)
+            return
+          }
           when (code) {
             // Nobody spoke: just listen again.
             SpeechRecognizer.ERROR_NO_MATCH,
@@ -795,7 +804,7 @@ object Engine {
             }
             else -> {
               errorStreak += 1
-              log("Speech recognition error $code")
+              log("Erreur de reconnaissance vocale $code")
               listenAfter(if (errorStreak > 5) 3000 else 800)
             }
           }
