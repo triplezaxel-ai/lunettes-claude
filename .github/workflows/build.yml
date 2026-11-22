@@ -39,6 +39,12 @@ jobs:
             printf '%s' "$KEYSTORE_B64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/signing.p12"
             echo "SIGNING_KEYSTORE_FILE=$RUNNER_TEMP/signing.p12" >> "$GITHUB_ENV"
             echo "kind=project key" >> "$GITHUB_OUTPUT"
+          elif [ -f signing/lunettes.p12 ]; then
+            # Fixed key kept in this private repository, so every build installs over the last.
+            cp signing/lunettes.p12 "$RUNNER_TEMP/signing.p12"
+            echo "SIGNING_KEYSTORE_FILE=$RUNNER_TEMP/signing.p12" >> "$GITHUB_ENV"
+            echo "SIGNING_KEYSTORE_PASSWORD=$(cat signing/password.txt)" >> "$GITHUB_ENV"
+            echo "kind=repository key" >> "$GITHUB_OUTPUT"
           else
             echo "kind=throwaway key" >> "$GITHUB_OUTPUT"
           fi
@@ -46,9 +52,10 @@ jobs:
       - name: Build
         id: build
         env:
-          SIGNING_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          SECRET_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
         run: |
           set -o pipefail
+          if [ -n "$SECRET_KEYSTORE_PASSWORD" ]; then export SIGNING_KEYSTORE_PASSWORD="$SECRET_KEYSTORE_PASSWORD"; fi
           chmod +x gradlew
           ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
 

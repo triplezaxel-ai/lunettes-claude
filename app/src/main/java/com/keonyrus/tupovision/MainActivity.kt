@@ -116,6 +116,7 @@ class MainActivity : ComponentActivity() {
   override fun onResume() {
     super.onResume()
     Engine.refreshEnvironment()
+    Engine.rearmStandby()
   }
 
   private fun requestAndroidPermissions() {

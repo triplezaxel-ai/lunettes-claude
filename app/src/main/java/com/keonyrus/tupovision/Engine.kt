@@ -414,6 +414,7 @@ object Engine {
    */
   fun setStandby(value: Boolean) {
     if (value == _state.value.standby) return
+    prefs().edit().putBoolean("standby_wanted", value).apply()
     if (!value) {
       MediaWatch.stop()
       update { it.copy(standby = false, standbyAudio = "") }
@@ -448,6 +449,18 @@ object Engine {
     }
     update { it.copy(standby = true, standbyAudio = glasses) }
     log("Standby on, watching ${_state.value.triggerPackage.trim()} while music goes to $glasses")
+  }
+
+  /**
+   * Switches standby back on when the screen opens, if it was on before Android closed the app.
+   * Quiet when the glasses are not connected: it will try again next time.
+   */
+  fun rearmStandby() {
+    if (_state.value.standby || !wearablesReady) return
+    if (!prefs().getBoolean("standby_wanted", false)) return
+    if (!MediaWatch.hasAccess(app) || MediaWatch.bluetoothOutputs(app).isEmpty()) return
+    log("Veille réactivée automatiquement")
+    setStandby(true)
   }
 
   /** Called when the standby gesture arrives from the glasses. */
