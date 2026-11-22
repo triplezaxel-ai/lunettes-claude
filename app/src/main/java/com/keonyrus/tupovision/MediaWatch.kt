@@ -44,6 +44,7 @@ object MediaWatch {
   // One gesture causes a burst of session changes; it must toggle once.
   private const val DEBOUNCE_MS = 4000L
   private const val SILENCE_MS = 6000L
+  private const val MIN_STOP_DELAY_MS = 20_000L
 
   private val handler = Handler(Looper.getMainLooper())
   private var manager: MediaSessionManager? = null
@@ -185,10 +186,16 @@ object MediaWatch {
       Engine.log("Media: ${controller.packageName} is ${stateName(state)}")
     }
     if (controller.packageName != triggerPackage || state == null) return
-    if (state.state == PlaybackState.STATE_PLAYING && SystemClock.elapsedRealtime() < silenceUntil) {
+    val now = SystemClock.elapsedRealtime()
+    // Right after a gesture, the glasses and Bluetooth often restart the music by themselves when
+    // the audio route changes. Those restarts are silenced and must not toggle the conversation
+    // back off: only a gesture well after the start counts as "stop".
+    val justStarted = Engine.state.value.running && now - lastTriggerAt < MIN_STOP_DELAY_MS
+    if (state.state == PlaybackState.STATE_PLAYING && (now < silenceUntil || justStarted)) {
       runCatching { controller.transportControls.pause() }
       return
     }
+    if (justStarted) return
     // Asked to play: it either starts, or fails because nobody is signed in. Both count.
     val asked =
         state.state == PlaybackState.STATE_PLAYING ||
@@ -205,7 +212,7 @@ object MediaWatch {
       // Someone is using the phone, so this is them starting music, not a gesture.
       if (now - lastIgnoredAt > DEBOUNCE_MS) {
         lastIgnoredAt = now
-        Engine.log("Media: started with the phone in use, not treated as a gesture")
+        Engine.log("Média : musique lancée téléphone en main, ignorée")
       }
       return
     }
@@ -220,7 +227,7 @@ object MediaWatch {
       if (now - lastIgnoredAt > DEBOUNCE_MS) {
         lastIgnoredAt = now
         val where = route ?: outputs.firstOrNull() ?: "the phone"
-        Engine.log("Media: music goes to $where, not to $glassesOutput; not treated as a gesture")
+        Engine.log("Média : le son va vers $where et non vers $glassesOutput, ignoré")
       }
       return
     }
