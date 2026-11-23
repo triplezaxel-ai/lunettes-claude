@@ -775,7 +775,14 @@ object Engine {
 
         override fun onFinal(text: String) {
           errorStreak = 0
-          onUtterance(text)
+          // Samsung's recognizer can show the words as partials, then return an empty final
+          // result. The last partial is what was said.
+          val partial = _state.value.partial.trim()
+          val heard = text.trim().ifEmpty { partial }
+          if (text.isBlank() && partial.isNotEmpty()) {
+            log("Résultat final vide, envoi de la phrase partielle « $partial »")
+          }
+          onUtterance(heard)
         }
 
         override fun onError(code: Int) {
@@ -847,6 +854,7 @@ object Engine {
         return
       }
     }
+    log("Question : « $question »")
     turnJob = scope.launch { runTurn(question) }
   }
 
