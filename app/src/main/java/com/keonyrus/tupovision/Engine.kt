@@ -527,16 +527,13 @@ object Engine {
     }
     update { it.copy(running = true, phase = Phase.CONNECTING, error = null) }
     scope.launch {
-      var granted = false
-      Wearables.checkPermissionStatus(Permission.CAMERA)
-          .onSuccess { status ->
-            granted = status == PermissionStatus.Granted
-            // A start from the glasses cannot ask, so the answer itself is worth seeing.
-            if (requestPermission == null) log("Gesture: Meta AI reports camera access as $status")
-          }
-          .onFailure { error, _ -> log("Camera permission check: ${error.description}") }
+      var granted = cameraGranted("avant demande")
       if (!granted && requestPermission != null) {
-        granted = requestPermission(Permission.CAMERA) == PermissionStatus.Granted
+        // Meta AI may never hand the answer back (Android can recreate this screen meanwhile),
+        // so the wait is bounded and the status is read again afterwards.
+        val answer = withTimeoutOrNull(90_000) { requestPermission(Permission.CAMERA) }
+        log("Réponse de Meta AI à la demande caméra : ${answer ?: "aucune (délai dépassé)"}")
+        granted = answer == PermissionStatus.Granted || cameraGranted("après demande")
       }
       if (!_state.value.running) return@launch
       if (!granted) {
@@ -559,6 +556,18 @@ object Engine {
       }
       openSession()
     }
+  }
+
+  /** What Meta AI says about camera access right now, written to the journal. */
+  private suspend fun cameraGranted(moment: String): Boolean {
+    var granted = false
+    Wearables.checkPermissionStatus(Permission.CAMERA)
+        .onSuccess { status ->
+          granted = status == PermissionStatus.Granted
+          log("Accès caméra ($moment) : $status")
+        }
+        .onFailure { error, _ -> log("Vérification de l'accès caméra ($moment) : ${error.description}") }
+    return granted
   }
 
   fun stop() {

@@ -73,8 +73,13 @@ class MainActivity : ComponentActivity() {
       registerForActivityResult(RequestMultiplePermissions()) { Engine.refreshEnvironment() }
 
   // Camera access on the glasses is granted in the Meta AI app, which this launcher opens.
-  private val permissionMutex = Mutex()
-  private var permissionContinuation: CancellableContinuation<PermissionStatus>? = null
+  // Kept outside this screen: Android may recreate it while Meta AI is in front, and the answer
+  // must still reach the request that is waiting for it.
+  companion object {
+    private val permissionMutex = Mutex()
+    private var permissionContinuation: CancellableContinuation<PermissionStatus>? = null
+  }
+
   private val wearablesPermission =
       registerForActivityResult(Wearables.RequestPermissionContract()) { result ->
         val status = result.getOrDefault(PermissionStatus.Denied)
