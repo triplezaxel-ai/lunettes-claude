@@ -106,6 +106,7 @@ class MainActivity : ComponentActivity() {
               onUnregister = { Engine.unregister(this) },
               onStart = { Engine.start(::requestWearablesPermission) },
               onCopyLog = ::copyLog,
+              onShareLog = ::shareLog,
               onNotificationAccess = ::openNotificationAccess,
           )
         }
@@ -143,7 +144,18 @@ class MainActivity : ComponentActivity() {
 
   private fun copyLog() {
     val clipboard = getSystemService(ClipboardManager::class.java)
-    clipboard.setPrimaryClip(ClipData.newPlainText("Journal Lunettes Claude", Engine.logText()))
+    clipboard.setPrimaryClip(
+        ClipData.newPlainText("Journal Lunettes Claude", Engine.journalForSharing()),
+    )
+  }
+
+  private fun shareLog() {
+    val send =
+        Intent(Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_SUBJECT, "Journal Lunettes Claude")
+            .putExtra(Intent.EXTRA_TEXT, Engine.journalForSharing())
+    startActivity(Intent.createChooser(send, "Envoyer le journal"))
   }
 }
 
@@ -156,6 +168,7 @@ private fun Screen(
     onUnregister: () -> Unit,
     onStart: () -> Unit,
     onCopyLog: () -> Unit,
+    onShareLog: () -> Unit,
     onNotificationAccess: () -> Unit,
 ) {
   Column(
@@ -167,6 +180,7 @@ private fun Screen(
       verticalArrangement = Arrangement.spacedBy(12.dp),
   ) {
     Text("Lunettes Claude", style = MaterialTheme.typography.headlineSmall)
+    Text("Version ${state.version}", style = MaterialTheme.typography.bodySmall)
 
     val error = state.error
     if (error != null) {
@@ -179,11 +193,32 @@ private fun Screen(
     }
 
     ConversationSection(state, onStart)
+    DiagnosticSection(state)
     GlassesSection(state, onGrantPermissions, onInstallMetaAi, onRegister, onUnregister)
     ClaudeSection(state)
     StandbySection(state, onNotificationAccess)
     SettingsSection(state)
-    LogSection(state, onCopyLog)
+    LogSection(state, onCopyLog, onShareLog)
+  }
+}
+
+@Composable
+private fun DiagnosticSection(state: UiState) {
+  Section("Diagnostic") {
+    OutlinedButton(
+        onClick = { Engine.testClaude() },
+        enabled = state.signedIn && !state.testing,
+    ) {
+      Text("Tester Claude")
+    }
+    Text(
+        "Envoie une question test sans les lunettes et lit la réponse à voix haute : vérifie " +
+            "la clé, le plafond Anthropic et la voix.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    if (state.testResult.isNotEmpty()) {
+      Text(state.testResult, color = if (state.testResult.startsWith("Test réussi")) Accent else Warning)
+    }
   }
 }
 
@@ -455,9 +490,15 @@ private fun NumberField(value: Int, label: String, onChange: (Int) -> Unit) {
 }
 
 @Composable
-private fun LogSection(state: UiState, onCopyLog: () -> Unit) {
+private fun LogSection(state: UiState, onCopyLog: () -> Unit, onShareLog: () -> Unit) {
   Section("Journal") {
+    Button(onClick = onShareLog) { Text("Envoyer le journal") }
     TextButton(onClick = onCopyLog) { Text("Copier le journal") }
+    Text(
+        "Le journal est conservé même si l'app se ferme ou plante. « Envoyer » ouvre le menu de " +
+            "partage : mail, WhatsApp, ou colle-le dans la conversation avec Claude.",
+        style = MaterialTheme.typography.bodySmall,
+    )
     Text(
         state.log.takeLast(60).joinToString("\n"),
         fontFamily = FontFamily.Monospace,

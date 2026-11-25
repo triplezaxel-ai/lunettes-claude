@@ -28,7 +28,10 @@ import com.meta.wearable.dat.core.session.DeviceSessionState
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
 import com.meta.wearable.dat.core.types.RegistrationState
+import android.speech.tts.TextToSpeech
+import java.io.File
 import java.text.SimpleDateFormat
+import java.util.concurrent.Executors
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
@@ -111,6 +114,10 @@ data class UiState(
     val monthOutputTokens: Long = 0,
     /** Estimated spend this month, in US dollars. */
     val monthCost: Double = 0.0,
+    /** The installed version, shown at the top of the screen. */
+    val version: String = "",
+    val testing: Boolean = false,
+    val testResult: String = "",
 )
 
 /**
@@ -143,6 +150,10 @@ object Engine {
 
   private val logLines = ArrayDeque<String>()
   private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
+  private val fileClock = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+  private val logWriter = Executors.newSingleThreadExecutor()
+  private const val JOURNAL = "journal.txt"
+  private const val JOURNAL_MAX_BYTES = 400_000L
 
   // Glasses
   private var wearablesReady = false
@@ -176,6 +187,17 @@ object Engine {
 
   fun attach(application: Application) {
     app = application
+    val version =
+        runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }
+            .getOrNull()
+            .orEmpty()
+    // The journal from before Android closed the app, so problems can still be traced.
+    runCatching {
+      val previous = journalFile().takeIf { it.exists() }?.readLines()?.takeLast(MAX_LOG).orEmpty()
+      synchronized(logLines) { previous.forEach { logLines.addLast(it) } }
+    }
+    update { it.copy(version = version) }
+    log("—— Démarrage de l'app, version $version ——")
     val prefs = prefs()
     update {
       it.copy(
@@ -1222,8 +1244,110 @@ object Engine {
   }
 
   /** Safe from any thread. The log is on screen because there is no other way to see inside. */
+  private fun journalFile(): File = File(app.filesDir, JOURNAL)
+
+  /** Every line also goes to a file, so the journal survives Android closing the app. */
+  private fun appendToJournal(line: String) {
+    if (!::app.isInitialized) return
+    logWriter.execute {
+      runCatching {
+        val file = journalFile()
+        file.appendText(line + "\n")
+        if (file.length() > JOURNAL_MAX_BYTES) {
+          val keep = file.readText().takeLast((JOURNAL_MAX_BYTES / 2).toInt())
+          file.writeText(keep.substringAfter('\n'))
+        }
+      }
+    }
+  }
+
+  /** Called from the crash handler: written at once, since the process is about to die. */
+  fun recordCrash(error: Throwable) {
+    if (!::app.isInitialized) return
+    runCatching {
+      journalFile()
+          .appendText(
+              "${fileClock.format(Date())}  PLANTAGE : ${error}\n" +
+                  error.stackTraceToString().take(4000) + "\n",
+          )
+    }
+  }
+
+  /** The end of the journal file, small enough to share as text. */
+  fun journalForSharing(): String {
+    val body = runCatching { journalFile().readText() }.getOrDefault(logText()).takeLast(100_000)
+    return "Lunettes Claude ${_state.value.version}, modèle ${_state.value.model}\n\n$body"
+  }
+
+  /** A question sent without the glasses: checks the key, the budget and the voice. */
+  fun testClaude() {
+    if (_state.value.testing) return
+    val key = SecureStore.get(app, CLAUDE_KEY)
+    if (key == null) {
+      update { it.copy(testResult = "Aucune clé Claude enregistrée") }
+      return
+    }
+    update { it.copy(testing = true, testResult = "Test en cours…") }
+    log("Test de Claude (${_state.value.model})")
+    scope.launch {
+      val answer = StringBuilder()
+      val result =
+          try {
+            val messages =
+                org.json.JSONArray()
+                    .put(Claude.textMessage("user", "Dis bonjour et confirme que tu fonctionnes."))
+            Claude.stream(
+                    key,
+                    Claude.buildBody(
+                        _state.value.model,
+                        "Réponds en une seule phrase courte, en français, en tutoyant.",
+                        messages,
+                        80,
+                    ),
+                )
+                .collect { event ->
+                  when (event) {
+                    is ClaudeEvent.Text -> answer.append(event.delta)
+                    is ClaudeEvent.ToolUse -> Unit
+                    is ClaudeEvent.Done ->
+                        recordUsage(event.usage, _state.value.model, countQuestion = false)
+                  }
+                }
+            val text = answer.toString().trim()
+            speakOnce(text)
+            "Test réussi : $text"
+          } catch (e: CancellationException) {
+            throw e
+          } catch (e: Exception) {
+            "Échec du test : ${e.message}"
+          }
+      log(result)
+      update { it.copy(testing = false, testResult = result) }
+    }
+  }
+
+  /** Reads a sentence aloud outside a conversation, through whatever audio output is active. */
+  private fun speakOnce(text: String) {
+    if (text.isEmpty()) return
+    var engine: TextToSpeech? = null
+    engine =
+        TextToSpeech(app) { status ->
+          if (status == TextToSpeech.SUCCESS) {
+            engine?.language = Locale.forLanguageTag(speechLanguage())
+            engine?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "test")
+          } else {
+            log("Synthèse vocale indisponible (code $status)")
+          }
+        }
+    scope.launch {
+      delay(20_000)
+      runCatching { engine?.shutdown() }
+    }
+  }
+
   fun log(message: String) {
     Log.i(TAG, message)
+    appendToJournal("${fileClock.format(Date())}  $message")
     val snapshot =
         synchronized(logLines) {
           logLines.addLast("${clock.format(Date())}  $message")
