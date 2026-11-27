@@ -118,6 +118,10 @@ data class UiState(
     val version: String = "",
     val testing: Boolean = false,
     val testResult: String = "",
+    /** Update state: what to show, and the newer build when there is one (0 when none). */
+    val updateText: String = "",
+    val updateBuild: Int = 0,
+    val updating: Boolean = false,
 )
 
 /**
@@ -1315,6 +1319,82 @@ object Engine {
   fun journalForSharing(): String {
     val body = runCatching { journalFile().readText() }.getOrDefault(logText()).takeLast(100_000)
     return "Lunettes Claude ${_state.value.version}, modèle ${_state.value.model}\n\n$body"
+  }
+
+  private var newerRelease: Release? = null
+  private var lastUpdateCheck = 0L
+
+  /** Looks for a newer build on GitHub; quietly at most once an hour unless asked. */
+  fun checkForUpdate(manual: Boolean) {
+    val now = SystemClock.elapsedRealtime()
+    if (_state.value.updating) return
+    if (!manual && lastUpdateCheck != 0L && now - lastUpdateCheck < 3_600_000) return
+    lastUpdateCheck = now
+    if (manual) update { it.copy(updateText = "Recherche d'une mise à jour…") }
+    scope.launch {
+      try {
+        val release = Updater.latest()
+        val installed = Updater.installedBuild(app)
+        if (release.build > installed) {
+          newerRelease = release
+          update {
+            it.copy(
+                updateBuild = release.build,
+                updateText = "Nouvelle version disponible : 0.1.${release.build}",
+            )
+          }
+          log("Mise à jour disponible : build ${release.build} (installé : $installed)")
+        } else {
+          newerRelease = null
+          update { it.copy(updateBuild = 0, updateText = "Tu as la dernière version.") }
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        log("Recherche de mise à jour impossible : ${e.message}")
+        if (manual) update { it.copy(updateText = "Recherche impossible : ${e.message}") }
+      }
+    }
+  }
+
+  /** Downloads the newer build and opens Android's installer. */
+  fun installUpdate(context: Context) {
+    val release = newerRelease ?: return
+    if (_state.value.updating) return
+    if (!Updater.canInstall(context)) {
+      update {
+        it.copy(
+            updateText =
+                "Autorise d'abord Lunettes Claude à installer des applis, puis touche à nouveau " +
+                    "Mettre à jour.",
+        )
+      }
+      context.startActivity(
+          Intent(
+                  android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                  Uri.parse("package:${context.packageName}"),
+              )
+              .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+      )
+      return
+    }
+    update { it.copy(updating = true, updateText = "Téléchargement…") }
+    log("Téléchargement de la mise à jour ${release.build}")
+    scope.launch {
+      try {
+        val apk =
+            Updater.download(app, release) { percent ->
+              update { it.copy(updateText = "Téléchargement… $percent %") }
+            }
+        update { it.copy(updating = false, updateText = "Confirme l'installation.") }
+        Updater.install(context, apk)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        log("Mise à jour impossible : ${e.message}")
+        update { it.copy(updating = false, updateText = "Échec : ${e.message}") }
+      }
+    }
   }
 
   /** A question sent without the glasses: checks the key, the budget and the voice. */

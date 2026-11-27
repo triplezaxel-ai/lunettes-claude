@@ -123,6 +123,7 @@ class MainActivity : ComponentActivity() {
     super.onResume()
     Engine.refreshEnvironment()
     Engine.rearmStandby()
+    Engine.checkForUpdate(manual = false)
   }
 
   private fun requestAndroidPermissions() {
@@ -197,6 +198,7 @@ private fun Screen(
       }
     }
 
+    UpdateSection(state)
     ConversationSection(state, onStart)
     DiagnosticSection(state)
     GlassesSection(state, onGrantPermissions, onInstallMetaAi, onRegister, onUnregister)
@@ -204,6 +206,38 @@ private fun Screen(
     StandbySection(state, onNotificationAccess)
     SettingsSection(state)
     LogSection(state, onCopyLog, onShareLog)
+  }
+}
+
+@Composable
+private fun UpdateSection(state: UiState) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  if (state.updateBuild > 0) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(state.updateText, color = Accent, style = MaterialTheme.typography.titleMedium)
+        Button(
+            onClick = { Engine.installUpdate(context) },
+            enabled = !state.updating,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+          Text("Mettre à jour")
+        }
+        Text(
+            "Ta clé, tes réglages et l'accès caméra sont conservés.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+      }
+    }
+  } else {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      TextButton(onClick = { Engine.checkForUpdate(manual = true) }) {
+        Text("Rechercher une mise à jour")
+      }
+      if (state.updateText.isNotEmpty()) {
+        Text(state.updateText, style = MaterialTheme.typography.bodySmall)
+      }
+    }
   }
 }
 
