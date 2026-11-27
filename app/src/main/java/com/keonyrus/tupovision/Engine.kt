@@ -835,6 +835,8 @@ object Engine {
           // Recognizers may end with an empty partial: never let it erase what was heard.
           if (text.isBlank()) return
           lastHeard = text
+          // Talking counts as activity: never stop for idleness in the middle of a sentence.
+          lastActivityAt = SystemClock.elapsedRealtime()
           update { it.copy(partial = text) }
         }
 
@@ -920,6 +922,11 @@ object Engine {
     stop()
   }
 
+  /** Lower case without accents, same length as the input for these alphabets. */
+  private fun fold(text: String): String =
+      java.text.Normalizer.normalize(text.lowercase(), java.text.Normalizer.Form.NFD)
+          .replace(Regex("\\p{Mn}"), "")
+
   private fun onUtterance(text: String) {
     val heard = text.trim()
     if (heard.isEmpty()) {
@@ -929,9 +936,11 @@ object Engine {
     var question = heard
     val wakeWord = _state.value.wakeWord.trim()
     if (wakeWord.isNotEmpty()) {
-      // With a wake word set, everything that does not contain it is ignored.
-      val index = heard.lowercase().indexOf(wakeWord.lowercase())
+      // With a wake word set, everything that does not contain it is ignored. Accents and case
+      // are ignored too, since the recognizer may spell the name differently.
+      val index = fold(heard).indexOf(fold(wakeWord))
       if (index < 0) {
+        log("Phrase ignorée, le mot d'appel « $wakeWord » n'y est pas : « $heard »")
         if (idleExpired()) stopForIdle() else listen()
         return
       }

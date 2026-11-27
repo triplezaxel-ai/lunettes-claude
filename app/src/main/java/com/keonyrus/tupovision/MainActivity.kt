@@ -280,6 +280,14 @@ private fun ConversationSection(state: UiState, onStart: () -> Unit) {
       )
     }
     Text(state.phase.label, style = MaterialTheme.typography.titleMedium, color = Accent)
+    if (state.wakeWord.isNotBlank()) {
+      Text(
+          "Mot d'appel actif : « ${state.wakeWord.trim()} ». Toute phrase sans ce mot est " +
+              "ignorée. Vide le champ dans les Réglages pour tout envoyer.",
+          style = MaterialTheme.typography.bodySmall,
+          color = Warning,
+      )
+    }
     if (state.partial.isNotEmpty()) Text("… ${state.partial}")
     if (state.question.isNotEmpty()) Text("Toi : ${state.question}")
     if (state.answer.isNotEmpty()) Text("Claude : ${state.answer}")
