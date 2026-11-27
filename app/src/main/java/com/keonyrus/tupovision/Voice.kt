@@ -148,7 +148,12 @@ class Tts(context: Context, private val onReady: (Boolean) -> Unit) {
   }
 
   /** Returns false when the engine has no voice for this language. */
-  fun configure(languageTag: String, throughCallAudio: Boolean): Boolean {
+  fun configure(
+      languageTag: String,
+      throughCallAudio: Boolean,
+      voiceName: String = "",
+      rate: Float = 1.1f,
+  ): Boolean {
     val usage =
         if (throughCallAudio) AudioAttributes.USAGE_VOICE_COMMUNICATION
         else AudioAttributes.USAGE_ASSISTANT
@@ -158,8 +163,12 @@ class Tts(context: Context, private val onReady: (Boolean) -> Unit) {
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build(),
     )
-    engine.setSpeechRate(1.1f)
+    engine.setSpeechRate(rate)
     val result = engine.setLanguage(Locale.forLanguageTag(languageTag))
+    // The chosen voice, if this engine still has it; otherwise the language's default voice.
+    if (voiceName.isNotEmpty()) {
+      runCatching { engine.voices?.firstOrNull { it.name == voiceName }?.let { engine.voice = it } }
+    }
     return result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED
   }
 

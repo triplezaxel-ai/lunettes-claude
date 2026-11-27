@@ -122,6 +122,11 @@ data class UiState(
     val updateText: String = "",
     val updateBuild: Int = 0,
     val updating: Boolean = false,
+    /** Chosen text-to-speech voice ("" = the language's default) and speaking speed. */
+    val voiceName: String = "",
+    val speechRate: Float = 1.1f,
+    /** Voices for the current language: technical name, then the label shown. */
+    val voices: List<Pair<String, String>> = emptyList(),
 )
 
 /**
@@ -214,6 +219,8 @@ object Engine {
               },
           monthlyBudget = prefs.getInt("monthly_budget", DEFAULT_MONTHLY_BUDGET),
           idleSeconds = prefs.getInt("idle_seconds", DEFAULT_IDLE_SECONDS),
+          voiceName = prefs.getString("tts_voice", "") ?: "",
+          speechRate = prefs.getFloat("tts_rate", 1.1f),
           glassesMic = prefs.getBoolean("glasses_mic", true),
           photoMode = prefs.getBoolean("photo_mode", false),
           wakeWord = prefs.getString("wake_word", "") ?: "",
@@ -766,7 +773,12 @@ object Engine {
 
       val speech = tts ?: Tts(app) { ok -> if (!ok) log("Text-to-speech failed to start") }.also { tts = it }
       withTimeoutOrNull(3000) { while (!speech.ready) delay(50) }
-      if (!speech.configure(speechLanguage(), routed)) {
+      if (!speech.configure(
+          speechLanguage(),
+          routed,
+          _state.value.voiceName,
+          _state.value.speechRate,
+      )) {
         log("The phone has no text-to-speech voice for ${speechLanguage()}")
       }
 
@@ -1500,6 +1512,45 @@ object Engine {
     }
   }
 
+  fun setVoice(name: String) {
+    update { it.copy(voiceName = name) }
+    prefs().edit().putString("tts_voice", name).apply()
+  }
+
+  fun setSpeechRate(rate: Float) {
+    val clean = rate.coerceIn(0.5f, 2.0f)
+    update { it.copy(speechRate = clean) }
+    prefs().edit().putFloat("tts_rate", clean).apply()
+  }
+
+  /** Lists the phone's voices for the conversation language, local ones first. */
+  fun loadVoices() {
+    var engine: TextToSpeech? = null
+    engine =
+        TextToSpeech(app) { status ->
+          if (status == TextToSpeech.SUCCESS) {
+            val language = Locale.forLanguageTag(speechLanguage()).language
+            val found =
+                runCatching { engine?.voices.orEmpty() }
+                    .getOrDefault(emptySet())
+                    .filter { it.locale.language == language }
+                    .sortedWith(compareBy({ it.isNetworkConnectionRequired }, { it.name }))
+            val list =
+                found.mapIndexed { i, voice ->
+                  val where = if (voice.isNetworkConnectionRequired) "internet" else "hors ligne"
+                  voice.name to "Voix ${i + 1} · ${voice.locale.displayCountry} · $where"
+                }
+            update { it.copy(voices = list) }
+          }
+          scope.launch { runCatching { engine?.shutdown() } }
+        }
+  }
+
+  /** A sample sentence with the chosen voice and speed. */
+  fun previewVoice() {
+    speakOnce("Bonjour Axel, voici ma voix à cette vitesse. Elle te convient ?")
+  }
+
   /** Reads a sentence aloud outside a conversation, through whatever audio output is active. */
   private fun speakOnce(text: String) {
     if (text.isEmpty()) return
@@ -1508,6 +1559,13 @@ object Engine {
         TextToSpeech(app) { status ->
           if (status == TextToSpeech.SUCCESS) {
             engine?.language = Locale.forLanguageTag(speechLanguage())
+            engine?.setSpeechRate(_state.value.speechRate)
+            val wanted = _state.value.voiceName
+            if (wanted.isNotEmpty()) {
+              runCatching {
+                engine?.voices?.firstOrNull { it.name == wanted }?.let { engine?.voice = it }
+              }
+            }
             engine?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "test")
           } else {
             log("Synthèse vocale indisponible (code $status)")

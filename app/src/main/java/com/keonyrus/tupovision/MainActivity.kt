@@ -124,6 +124,7 @@ class MainActivity : ComponentActivity() {
     Engine.refreshEnvironment()
     Engine.rearmStandby()
     Engine.checkForUpdate(manual = false)
+    Engine.loadVoices()
   }
 
   private fun requestAndroidPermissions() {
@@ -500,6 +501,7 @@ private fun SettingsSection(state: UiState) {
         enabled = !state.running,
         onChange = { Engine.setPhotoMode(it) },
     )
+    VoiceSettings(state)
     OutlinedTextField(
         value = state.language,
         onValueChange = { Engine.setLanguage(it.trim()) },
@@ -518,6 +520,48 @@ private fun SettingsSection(state: UiState) {
         modifier = Modifier.fillMaxWidth(),
     )
   }
+}
+
+@Composable
+private fun VoiceSettings(state: UiState) {
+  var expanded by remember { mutableStateOf(false) }
+  val current =
+      state.voices.firstOrNull { it.first == state.voiceName }?.second ?: "Voix par défaut"
+  Text("Voix de Claude", style = MaterialTheme.typography.titleSmall)
+  Box {
+    OutlinedButton(onClick = { expanded = true }) { Text(current) }
+    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+      DropdownMenuItem(
+          text = { Text("Voix par défaut") },
+          onClick = {
+            Engine.setVoice("")
+            expanded = false
+          },
+      )
+      state.voices.forEach { (name, label) ->
+        DropdownMenuItem(
+            text = { Text(label) },
+            onClick = {
+              Engine.setVoice(name)
+              expanded = false
+            },
+        )
+      }
+    }
+  }
+  Text("Vitesse : %.1f×".format(state.speechRate), style = MaterialTheme.typography.bodySmall)
+  androidx.compose.material3.Slider(
+      value = state.speechRate,
+      onValueChange = { Engine.setSpeechRate((it * 10).toInt() / 10f) },
+      valueRange = 0.6f..1.8f,
+      steps = 11,
+  )
+  OutlinedButton(onClick = { Engine.previewVoice() }) { Text("Écouter") }
+  Text(
+      "S'applique à la prochaine conversation. D'autres voix s'installent dans les paramètres " +
+          "Android, rubrique Synthèse vocale.",
+      style = MaterialTheme.typography.bodySmall,
+  )
 }
 
 @Composable
