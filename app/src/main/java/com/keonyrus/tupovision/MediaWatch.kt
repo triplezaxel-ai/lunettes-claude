@@ -260,6 +260,19 @@ object MediaWatch {
       }
 
   /** A short tone in the glasses: high when the conversation starts, low when it stops. */
+  /** A short, quiet tick while Claude is thinking or looking. */
+  fun tick() {
+    Thread {
+          runCatching {
+            val tones = ToneGenerator(AudioManager.STREAM_MUSIC, 25)
+            tones.startTone(ToneGenerator.TONE_PROP_PROMPT, 60)
+            Thread.sleep(150)
+            tones.release()
+          }
+        }
+        .start()
+  }
+
   fun beep(starting: Boolean) {
     Thread {
           runCatching {

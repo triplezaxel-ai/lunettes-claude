@@ -560,14 +560,23 @@ object Engine {
 
   /** What Meta AI says about camera access right now, written to the journal. */
   private suspend fun cameraGranted(moment: String): Boolean {
-    var granted = false
-    Wearables.checkPermissionStatus(Permission.CAMERA)
-        .onSuccess { status ->
-          granted = status == PermissionStatus.Granted
-          log("Accès caméra ($moment) : $status")
-        }
-        .onFailure { error, _ -> log("Vérification de l'accès caméra ($moment) : ${error.description}") }
-    return granted
+    // Right after a gesture the glasses may not be discovered yet: give them a few seconds.
+    repeat(4) { attempt ->
+      var granted = false
+      var retry = false
+      Wearables.checkPermissionStatus(Permission.CAMERA)
+          .onSuccess { status ->
+            granted = status == PermissionStatus.Granted
+            log("Accès caméra ($moment) : $status")
+          }
+          .onFailure { error, _ ->
+            log("Vérification de l'accès caméra ($moment) : ${error.description}")
+            retry = error.description.contains("discovered", ignoreCase = true)
+          }
+      if (granted || !retry || attempt == 3) return granted
+      delay(1500)
+    }
+    return false
   }
 
   fun stop() {
@@ -830,6 +839,8 @@ object Engine {
             // Nobody spoke: just listen again.
             SpeechRecognizer.ERROR_NO_MATCH,
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+              val level = stt?.maxRms ?: -100f
+              log("Écoute sans phrase reconnue (code $code, niveau sonore max %.0f)".format(level))
               if (idleExpired()) stopForIdle() else listenAfter(150)
             }
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
@@ -913,6 +924,17 @@ object Engine {
       )
     }
 
+    // Sound cues: a beep says the question left; a soft tick says Claude is still working.
+    MediaWatch.beep(starting = true)
+    val ticker =
+        scope.launch {
+          delay(1500)
+          // Stops by itself if the turn is cancelled or ends without a cancel reaching it.
+          while (voiceActive && turnJob?.isActive == true) {
+            MediaWatch.tick()
+            delay(1500)
+          }
+        }
     val answer = StringBuilder()
     val chunker = SentenceChunker()
     var spoke = false
@@ -921,6 +943,7 @@ object Engine {
       if (clean.isEmpty()) return
       if (!spoke) {
         spoke = true
+        ticker.cancel()
         val latency = SystemClock.elapsedRealtime() - startedAt
         update { it.copy(phase = Phase.SPEAKING, latencyMs = latency) }
       }
@@ -1001,6 +1024,7 @@ object Engine {
           status == 429 ||
               detail.contains("usage limit", ignoreCase = true) ||
               detail.contains("credit balance", ignoreCase = true)
+      ticker.cancel()
       fail(
           when {
             status == 401 -> "Clé API Claude refusée : vérifie-la dans l'app"
@@ -1019,11 +1043,16 @@ object Engine {
       )
       awaitSpeechEnd()
       if (status == 401) {
+        ticker.cancel()
         shutdown()
         return
       }
     }
+    ticker.cancel()
     lastActivityAt = SystemClock.elapsedRealtime()
+    // Samsung's recognizer can go deaf when reused right after speech output: start a fresh one.
+    stt?.destroy()
+    log("Réponse terminée, j'écoute à nouveau")
     listen()
   }
 

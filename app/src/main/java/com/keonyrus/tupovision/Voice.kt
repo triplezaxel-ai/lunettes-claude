@@ -35,6 +35,10 @@ class Stt(private val context: Context, private val callbacks: Callbacks) {
   // False once the current utterance has been delivered or cancelled, so late callbacks are dropped.
   private var active = false
 
+  /** Loudest level heard since the last start, to tell "deaf microphone" from "silence". */
+  var maxRms = -100f
+    private set
+
   fun isAvailable(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
 
   fun start(languageTag: String) {
@@ -55,6 +59,7 @@ class Stt(private val context: Context, private val callbacks: Callbacks) {
           putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
         }
     active = true
+    maxRms = -100f
     current.startListening(intent)
   }
 
@@ -80,7 +85,9 @@ class Stt(private val context: Context, private val callbacks: Callbacks) {
           if (active) callbacks.onSpeechStart()
         }
 
-        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onRmsChanged(rmsdB: Float) {
+          if (rmsdB > maxRms) maxRms = rmsdB
+        }
 
         override fun onBufferReceived(buffer: ByteArray?) {}
 
