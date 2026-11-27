@@ -934,18 +934,23 @@ object Engine {
     }
     var question = heard
     val wakeWord = _state.value.wakeWord.trim()
-    if (wakeWord.isNotEmpty()) {
-      // With a wake word set, everything that does not contain it is ignored. Accents and case
-      // are ignored too, since the recognizer may spell the name differently.
+    // The wake word only opens a conversation: once Claude has answered, follow-ups need none.
+    if (wakeWord.isNotEmpty() && history.isEmpty()) {
+      // Accents and case are ignored, since the recognizer may spell it differently.
       val index = fold(heard).indexOf(fold(wakeWord))
       if (index < 0) {
         log("Phrase ignorée, le mot d'appel « $wakeWord » n'y est pas : « $heard »")
         if (idleExpired()) stopForIdle() else listen()
         return
       }
-      val after = (index + wakeWord.length).coerceAtMost(heard.length)
-      question = heard.substring(after).trim().trimStart(',', '.', '!', '?', ' ')
+      // The wake word can be anywhere in the sentence: remove it, keep everything else.
+      val end = (index + wakeWord.length).coerceAtMost(heard.length)
+      question =
+          (heard.substring(0, index) + " " + heard.substring(end))
+              .trim()
+              .trim(',', '.', '!', '?', ' ')
       if (question.isEmpty()) {
+        log("Mot d'appel seul entendu, j'attends la question")
         listen()
         return
       }

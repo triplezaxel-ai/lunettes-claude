@@ -282,8 +282,8 @@ private fun ConversationSection(state: UiState, onStart: () -> Unit) {
     Text(state.phase.label, style = MaterialTheme.typography.titleMedium, color = Accent)
     if (state.wakeWord.isNotBlank()) {
       Text(
-          "Mot d'appel actif : « ${state.wakeWord.trim()} ». Toute phrase sans ce mot est " +
-              "ignorée. Vide le champ dans les Réglages pour tout envoyer.",
+          "Mot d'appel actif : « ${state.wakeWord.trim()} », exigé pour la première question " +
+              "seulement. Vide le champ dans les Réglages pour ne plus l'exiger.",
           style = MaterialTheme.typography.bodySmall,
           color = Warning,
       )
