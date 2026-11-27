@@ -543,7 +543,10 @@ object Engine {
       if (!granted) {
         if (requestPermission == null) MediaWatch.beep(starting = false)
         fail(
-            if (requestPermission == null) {
+            if (glassesMissing) {
+              "Lunettes introuvables : vérifie qu'elles sont allumées et connectées, et que la " +
+                  "section 1 indique « App liée aux lunettes »."
+            } else if (requestPermission == null) {
               "Pas d'accès permanent à la caméra. Démarre une fois depuis l'app et choisis « Toujours autoriser » dans Meta AI."
             } else {
               "Meta AI n'a pas autorisé l'accès à la caméra des lunettes"
@@ -563,7 +566,10 @@ object Engine {
   }
 
   /** What Meta AI says about camera access right now, written to the journal. */
+  private var glassesMissing = false
+
   private suspend fun cameraGranted(moment: String): Boolean {
+    glassesMissing = false
     // Right after a gesture the glasses may not be discovered yet: give them a few seconds.
     repeat(4) { attempt ->
       var granted = false
@@ -576,6 +582,7 @@ object Engine {
           .onFailure { error, _ ->
             log("Vérification de l'accès caméra ($moment) : ${error.description}")
             retry = error.description.contains("discovered", ignoreCase = true)
+            if (retry) glassesMissing = true
           }
       if (granted || !retry || attempt == 3) return granted
       delay(1500)
@@ -851,6 +858,15 @@ object Engine {
               stt?.cancel()
               listenAfter(500)
             }
+            // The recognition service dropped the connection: this instance is dead, make a new
+            // one rather than retrying it forever.
+            SpeechRecognizer.ERROR_SERVER_DISCONNECTED,
+            SpeechRecognizer.ERROR_CLIENT -> {
+              errorStreak += 1
+              log("Reconnaissance vocale déconnectée (code $code), redémarrage")
+              stt?.destroy()
+              listenAfter(if (errorStreak > 5) 3000 else 700)
+            }
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
               fail("Pas d'accès au micro")
               shutdown()
@@ -1054,10 +1070,11 @@ object Engine {
     }
     ticker.cancel()
     lastActivityAt = SystemClock.elapsedRealtime()
-    // Samsung's recognizer can go deaf when reused right after speech output: start a fresh one.
+    // Samsung's recognizer can go deaf when reused right after speech output: start a fresh one,
+    // after a pause, because recreating it at once makes its service disconnect (error 11).
     stt?.destroy()
     log("Réponse terminée, j'écoute à nouveau")
-    listen()
+    listenAfter(600)
   }
 
   /** Listening must not start while the answer is still playing, or it would hear itself. */
