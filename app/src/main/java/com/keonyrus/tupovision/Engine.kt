@@ -846,9 +846,7 @@ object Engine {
           // result. The last partial is what was said.
           val partial = lastHeard.trim()
           val heard = text.trim().ifEmpty { partial }
-          if (text.isBlank() && partial.isNotEmpty()) {
-            log("Résultat final vide, envoi de la phrase partielle « $partial »")
-          }
+          log("Fin d'écoute : résultat final « ${text.trim()} », dernier texte entendu « $partial »")
           onUtterance(heard)
         }
 
@@ -930,6 +928,7 @@ object Engine {
   private fun onUtterance(text: String) {
     val heard = text.trim()
     if (heard.isEmpty()) {
+      log("Rien à envoyer, j'écoute à nouveau")
       if (idleExpired()) stopForIdle() else listen()
       return
     }
