@@ -501,6 +501,7 @@ private fun SettingsSection(state: UiState) {
         enabled = !state.running,
         onChange = { Engine.setPhotoMode(it) },
     )
+    TranslateSettings(state)
     VoiceSettings(state)
     OutlinedTextField(
         value = state.language,
@@ -519,6 +520,53 @@ private fun SettingsSection(state: UiState) {
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
+  }
+}
+
+@Composable
+private fun TranslateSettings(state: UiState) {
+  SettingSwitch(
+      title = "Mode traduction",
+      subtitle =
+          "L'app écoute dans la langue de ton interlocuteur et te lit la traduction en " +
+              "français (Claude Sonnet). Le moteur Google doit avoir cette langue installée : " +
+              "Speech Services by Google → Langues.",
+      checked = state.translateMode,
+      enabled = true,
+      onChange = { Engine.setTranslateMode(it) },
+  )
+  if (state.translateMode) {
+    var expanded by remember { mutableStateOf(false) }
+    val languages =
+        listOf(
+            "ko-KR" to "Coréen",
+            "en-US" to "Anglais",
+            "ja-JP" to "Japonais",
+            "zh-CN" to "Chinois (mandarin)",
+            "es-ES" to "Espagnol",
+            "de-DE" to "Allemand",
+            "it-IT" to "Italien",
+            "pt-PT" to "Portugais",
+            "ar-SA" to "Arabe",
+        )
+    val label =
+        languages.firstOrNull { it.first == state.partnerLanguage }?.second ?: state.partnerLanguage
+    Box {
+      OutlinedButton(onClick = { expanded = true }, enabled = !state.running) {
+        Text("Langue de l'interlocuteur : $label")
+      }
+      DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        languages.forEach { (tag, name) ->
+          DropdownMenuItem(
+              text = { Text(name) },
+              onClick = {
+                Engine.setPartnerLanguage(tag)
+                expanded = false
+              },
+          )
+        }
+      }
+    }
   }
 }
 

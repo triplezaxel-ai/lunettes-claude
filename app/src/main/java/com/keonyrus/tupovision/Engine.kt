@@ -127,6 +127,9 @@ data class UiState(
     val speechRate: Float = 1.1f,
     /** Voices for the current language: technical name, then the label shown. */
     val voices: List<Pair<String, String>> = emptyList(),
+    /** Translation mode: listens in the other person's language, reads the French aloud. */
+    val translateMode: Boolean = false,
+    val partnerLanguage: String = "ko-KR",
 )
 
 /**
@@ -221,6 +224,8 @@ object Engine {
           idleSeconds = prefs.getInt("idle_seconds", DEFAULT_IDLE_SECONDS),
           voiceName = prefs.getString("tts_voice", "") ?: "",
           speechRate = prefs.getFloat("tts_rate", 1.1f),
+          translateMode = prefs.getBoolean("translate_mode", false),
+          partnerLanguage = prefs.getString("partner_language", "ko-KR") ?: "ko-KR",
           glassesMic = prefs.getBoolean("glasses_mic", true),
           photoMode = prefs.getBoolean("photo_mode", false),
           wakeWord = prefs.getString("wake_word", "") ?: "",
@@ -818,7 +823,7 @@ object Engine {
     lastHeard = ""
     update { it.copy(phase = Phase.LISTENING, partial = "") }
     try {
-      stt?.start(speechLanguage())
+      stt?.start(listeningLanguage())
     } catch (e: Exception) {
       log("La reconnaissance vocale n'a pas démarré : ${e.message}")
       if (stt?.useOnDevice == true) {
@@ -831,6 +836,24 @@ object Engine {
 
   private fun speechLanguage(): String =
       _state.value.language.ifBlank { Locale.getDefault().toLanguageTag() }
+
+  /** What the recognizer listens for: the other person's language in translation mode. */
+  private fun listeningLanguage(): String =
+      if (_state.value.translateMode) _state.value.partnerLanguage.ifBlank { "ko-KR" }
+      else speechLanguage()
+
+  fun setTranslateMode(value: Boolean) {
+    update { it.copy(translateMode = value) }
+    prefs().edit().putBoolean("translate_mode", value).apply()
+    // The recognizer is tied to a language: a fresh one will pick up the new setting.
+    stt?.destroy()
+    if (voiceActive) listenAfter(300)
+  }
+
+  fun setPartnerLanguage(value: String) {
+    update { it.copy(partnerLanguage = value) }
+    prefs().edit().putString("partner_language", value).apply()
+  }
 
   private fun listenAfter(delayMs: Long) {
     scope.launch {
@@ -892,7 +915,10 @@ object Engine {
                 stt?.fallBackToDefault()
                 listenAfter(400)
               } else {
-                fail("La reconnaissance vocale ne gère pas la langue ${speechLanguage()}")
+                fail(
+                    "La reconnaissance vocale ne gère pas la langue ${listeningLanguage()}. " +
+                        "Installe-la dans Speech Services by Google → Langues.",
+                )
                 shutdown()
               }
             }
@@ -944,6 +970,11 @@ object Engine {
       if (idleExpired()) stopForIdle() else listen()
       return
     }
+    if (_state.value.translateMode) {
+      log("Entendu (${listeningLanguage()}) : « $heard »")
+      turnJob = scope.launch { runTranslation(heard) }
+      return
+    }
     var question = heard
     val wakeWord = _state.value.wakeWord.trim()
     // The wake word only opens a conversation: once Claude has answered, follow-ups need none.
@@ -969,6 +1000,82 @@ object Engine {
     }
     log("Question : « $question »")
     turnJob = scope.launch { runTurn(question) }
+  }
+
+  /**
+   * Translation mode: what the other person said, translated into French by Sonnet and read
+   * aloud. A short history of the exchange is kept so names and context carry over.
+   */
+  private suspend fun runTranslation(heard: String) {
+    lastActivityAt = SystemClock.elapsedRealtime()
+    if (budgetReached()) {
+      fail("Budget mensuel atteint (${_state.value.monthlyBudget} \$). Modifiable dans l'app.")
+      tts?.speak("Le budget du mois est atteint.")
+      awaitSpeechEnd()
+      listen()
+      return
+    }
+    val startedAt = SystemClock.elapsedRealtime()
+    update {
+      it.copy(phase = Phase.THINKING, question = heard, answer = "", partial = "", error = null)
+    }
+    val model = "claude-sonnet-5-5"
+    val answer = StringBuilder()
+    val chunker = SentenceChunker()
+    var spoke = false
+    fun say(sentence: String) {
+      val clean = cleanForSpeech(sentence)
+      if (clean.isEmpty()) return
+      if (!spoke) {
+        spoke = true
+        val latency = SystemClock.elapsedRealtime() - startedAt
+        update { it.copy(phase = Phase.SPEAKING, latencyMs = latency) }
+      }
+      tts?.speak(clean)
+    }
+    try {
+      val key = SecureStore.get(app, CLAUDE_KEY) ?: throw ApiException(401, "Aucune clé Claude")
+      val messages = org.json.JSONArray()
+      for (turn in history) {
+        messages.put(Claude.textMessage("user", turn.question))
+        messages.put(Claude.textMessage("assistant", turn.answer))
+      }
+      messages.put(Claude.textMessage("user", heard))
+      val system =
+          "Tu es un interprète. Le texte vient d'une reconnaissance vocale réglée sur la langue " +
+              "${listeningLanguage()} : il peut contenir des erreurs de transcription, corrige-les " +
+              "d'après le sens probable. Traduis-le en français naturel et oral, fidèlement, " +
+              "sans commentaire, sans guillemets, sans romanisation. Si le texte est " +
+              "incompréhensible, dis seulement : je n'ai pas compris."
+      Claude.stream(key, Claude.buildBody(model, system, messages, 400)).collect { event ->
+        when (event) {
+          is ClaudeEvent.Text -> {
+            answer.append(event.delta)
+            update { it.copy(answer = answer.toString()) }
+            chunker.push(event.delta).forEach { say(it) }
+          }
+          is ClaudeEvent.ToolUse -> Unit
+          is ClaudeEvent.Done -> recordUsage(event.usage, model, countQuestion = true)
+        }
+      }
+      chunker.flush()?.let { say(it) }
+      val text = answer.toString().trim()
+      log("Traduction : « $text »")
+      if (text.isNotEmpty()) {
+        history.addLast(Turn(heard, text))
+        while (history.size > MAX_HISTORY) history.removeFirst()
+      }
+      awaitSpeechEnd()
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      fail("Échec de la traduction : ${e.message}")
+      tts?.speak("La traduction a échoué.")
+      awaitSpeechEnd()
+    }
+    lastActivityAt = SystemClock.elapsedRealtime()
+    stt?.destroy()
+    listenAfter(600)
   }
 
   private suspend fun runTurn(question: String) {
