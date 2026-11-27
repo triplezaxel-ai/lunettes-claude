@@ -768,7 +768,11 @@ object Engine {
         log("The phone has no text-to-speech voice for ${speechLanguage()}")
       }
 
-      val recognizer = stt ?: Stt(app, sttCallbacks).also { stt = it }
+      val recognizer =
+          stt ?: Stt(app, sttCallbacks).also {
+            stt = it
+            log("Reconnaissance vocale : ${it.engineName}")
+          }
       if (!recognizer.isAvailable()) {
         fail("Aucun service de reconnaissance vocale sur ce téléphone")
         shutdown()
@@ -801,7 +805,11 @@ object Engine {
     try {
       stt?.start(speechLanguage())
     } catch (e: Exception) {
-      log("Speech recognition did not start: ${e.message}")
+      log("La reconnaissance vocale n'a pas démarré : ${e.message}")
+      if (stt?.useOnDevice == true) {
+        log("Retour au moteur du téléphone")
+        stt?.fallBackToDefault()
+      }
       listenAfter(1000)
     }
   }
@@ -857,6 +865,18 @@ object Engine {
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
               stt?.cancel()
               listenAfter(500)
+            }
+            // The on-device engine has no model for this language, or is not usable here.
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
+              if (stt?.useOnDevice == true) {
+                log("Moteur Google indisponible pour cette langue (code $code), retour au moteur du téléphone")
+                stt?.fallBackToDefault()
+                listenAfter(400)
+              } else {
+                fail("La reconnaissance vocale ne gère pas la langue ${speechLanguage()}")
+                shutdown()
+              }
             }
             // The recognition service dropped the connection: this instance is dead, make a new
             // one rather than retrying it forever.

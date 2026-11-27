@@ -32,6 +32,21 @@ class Stt(private val context: Context, private val callbacks: Callbacks) {
   }
 
   private var recognizer: SpeechRecognizer? = null
+
+  /**
+   * Google's on-device recognizer copes far better with the glasses' narrow-band Bluetooth audio
+   * than Samsung's default service. Turned off for the session if it cannot handle the language.
+   */
+  var useOnDevice = SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+
+  val engineName: String
+    get() = if (useOnDevice) "Google sur l'appareil" else "service par défaut du téléphone"
+
+  /** The on-device engine refused (language not installed, or unavailable): use the default. */
+  fun fallBackToDefault() {
+    useOnDevice = false
+    destroy()
+  }
   // False once the current utterance has been delivered or cancelled, so late callbacks are dropped.
   private var active = false
 
@@ -44,7 +59,9 @@ class Stt(private val context: Context, private val callbacks: Callbacks) {
   fun start(languageTag: String) {
     val current =
         recognizer
-            ?: SpeechRecognizer.createSpeechRecognizer(context).also {
+            ?: (if (useOnDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                else SpeechRecognizer.createSpeechRecognizer(context))
+                .also {
               it.setRecognitionListener(listener)
               recognizer = it
             }
