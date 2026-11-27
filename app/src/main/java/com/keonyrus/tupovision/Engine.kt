@@ -177,6 +177,8 @@ object Engine {
   private var turnJob: Job? = null
   private var errorStreak = 0
   private var lastActivityAt = 0L
+  /** The last non-empty words of the current utterance, kept even if the engine blanks them. */
+  private var lastHeard = ""
   private val history = ArrayDeque<Turn>()
 
   // Live voice
@@ -801,6 +803,7 @@ object Engine {
 
   private fun listen() {
     if (!voiceActive) return
+    lastHeard = ""
     update { it.copy(phase = Phase.LISTENING, partial = "") }
     try {
       stt?.start(speechLanguage())
@@ -829,6 +832,9 @@ object Engine {
         override fun onSpeechStart() {}
 
         override fun onPartial(text: String) {
+          // Recognizers may end with an empty partial: never let it erase what was heard.
+          if (text.isBlank()) return
+          lastHeard = text
           update { it.copy(partial = text) }
         }
 
@@ -836,7 +842,7 @@ object Engine {
           errorStreak = 0
           // Samsung's recognizer can show the words as partials, then return an empty final
           // result. The last partial is what was said.
-          val partial = _state.value.partial.trim()
+          val partial = lastHeard.trim()
           val heard = text.trim().ifEmpty { partial }
           if (text.isBlank() && partial.isNotEmpty()) {
             log("Résultat final vide, envoi de la phrase partielle « $partial »")
@@ -847,7 +853,7 @@ object Engine {
         override fun onError(code: Int) {
           // Some recognizers (Samsung's among them) show the words, then end with an error
           // instead of a final result. What was heard is still the question: send it.
-          val heard = _state.value.partial.trim()
+          val heard = lastHeard.trim()
           if (heard.isNotEmpty() && code != SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
             log("Reconnaissance vocale : erreur $code après « $heard », envoi quand même")
             errorStreak = 0
