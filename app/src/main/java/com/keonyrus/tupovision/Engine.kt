@@ -975,6 +975,17 @@ object Engine {
       if (idleExpired()) stopForIdle() else listen()
       return
     }
+    // "Merci mon pote" closes the conversation, in any mode.
+    if (fold(heard).contains("merci mon pote")) {
+      log("Phrase de clôture entendue : fin de la conversation")
+      scope.launch {
+        tts?.speak("À plus tard.")
+        awaitSpeechEnd()
+        MediaWatch.beep(starting = false)
+        stop()
+      }
+      return
+    }
     if (_state.value.translateMode) {
       log("Entendu (${listeningLanguage()}) : « $heard »")
       turnJob = scope.launch { runTranslation(heard) }
@@ -1278,8 +1289,9 @@ object Engine {
   private fun instructions(): String =
       "Tu es Claude, un assistant vocal intégré à des lunettes connectées. L'utilisateur te " +
           "parle à voix haute et ta réponse lui est lue dans les branches des lunettes. Réponds " +
-          "dans la langue de la question, par défaut en français, en le tutoyant. Sois bref et " +
-          "concret : une à trois phrases, sauf si on te demande plus. Pas de listes, de mise en " +
+          "dans la langue de la question, par défaut en français, en le tutoyant. Sois très bref : " +
+          "une ou deux phrases courtes, trente mots au maximum, sauf si on te demande des " +
+          "détails ou une explication. Va droit au but, sans formule de politesse ni reformulation. Pas de listes, de mise en " +
           "forme, d'émojis ni de liens ; écris les nombres et unités comme on les prononce. " +
           "Quand on te demande de l'aide sur une tâche manuelle, donne l'étape suivante à faire, " +
           "pas toute la procédure. Tu peux regarder ce que l'utilisateur a devant les yeux avec " +
