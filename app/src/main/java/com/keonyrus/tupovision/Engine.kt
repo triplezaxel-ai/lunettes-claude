@@ -130,6 +130,8 @@ data class UiState(
     /** Translation mode: listens in the other person's language, reads the French aloud. */
     val translateMode: Boolean = false,
     val partnerLanguage: String = "ko-KR",
+    /** Also treat the music starting as a gesture while the phone is in use. */
+    val triggerScreenOn: Boolean = false,
 )
 
 /**
@@ -230,6 +232,7 @@ object Engine {
           speechRate = prefs.getFloat("tts_rate", 1.1f),
           translateMode = prefs.getBoolean("translate_mode", false),
           partnerLanguage = prefs.getString("partner_language", "ko-KR") ?: "ko-KR",
+          triggerScreenOn = prefs.getBoolean("trigger_screen_on", false),
           glassesMic = prefs.getBoolean("glasses_mic", true),
           photoMode = prefs.getBoolean("photo_mode", false),
           // The gesture opens the conversation: a wake word only made phrases disappear.
@@ -853,6 +856,11 @@ object Engine {
     // The recognizer is tied to a language: a fresh one will pick up the new setting.
     stt?.destroy()
     if (voiceActive) listenAfter(300)
+  }
+
+  fun setTriggerScreenOn(value: Boolean) {
+    update { it.copy(triggerScreenOn = value) }
+    prefs().edit().putBoolean("trigger_screen_on", value).apply()
   }
 
   fun setPartnerLanguage(value: String) {

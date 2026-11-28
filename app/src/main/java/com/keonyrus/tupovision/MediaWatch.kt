@@ -208,7 +208,7 @@ object MediaWatch {
   private fun trigger(controller: MediaController) {
     val now = SystemClock.elapsedRealtime()
     if (now - lastTriggerAt < DEBOUNCE_MS) return
-    if (!phonePutAway()) {
+    if (!phonePutAway() && !Engine.state.value.triggerScreenOn) {
       // Someone is using the phone, so this is them starting music, not a gesture.
       if (now - lastIgnoredAt > DEBOUNCE_MS) {
         lastIgnoredAt = now

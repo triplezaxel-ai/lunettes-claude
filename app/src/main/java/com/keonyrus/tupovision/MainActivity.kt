@@ -452,6 +452,16 @@ private fun StandbySection(state: UiState, onNotificationAccess: () -> Unit) {
         enabled = true,
         onChange = { Engine.setStandby(it) },
     )
+    SettingSwitch(
+        title = "Déclencher aussi écran allumé",
+        subtitle =
+            "Le geste ou « Hey Meta, mets de la musique » lance Claude même si tu utilises le " +
+                "téléphone. En contrepartie, toute musique Spotify envoyée vers les lunettes " +
+                "lancera Claude tant que la veille est active.",
+        checked = state.triggerScreenOn,
+        enabled = true,
+        onChange = { Engine.setTriggerScreenOn(it) },
+    )
     if (!state.mediaAccess) {
       OutlinedButton(onClick = onNotificationAccess) { Text("Accorder l'accès aux notifications") }
       Text(
