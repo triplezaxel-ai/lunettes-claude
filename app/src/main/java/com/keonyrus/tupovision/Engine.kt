@@ -1185,7 +1185,8 @@ object Engine {
       chunker.flush()?.let { say(it) }
 
       val lookId = toolId
-      if (stopReason == "tool_use" && lookId != null) {
+      val looked = stopReason == "tool_use" && lookId != null
+      if (looked && lookId != null) {
         log("Claude demande à regarder")
         update { it.copy(phase = Phase.THINKING) }
         val jpeg = withContext(Dispatchers.Default) { acquireFrame() }
@@ -1213,7 +1214,12 @@ object Engine {
 
       val text = answer.toString().trim()
       if (text.isNotEmpty()) {
-        history.addLast(Turn(question, text))
+        // The picture is not sent again with the history, so say it existed: otherwise Claude
+        // rereads its own answer, finds no image, and apologizes for having made it up.
+        val remembered =
+            if (looked) "[Réponse donnée en regardant une vraie photo de la caméra.] $text"
+            else text
+        history.addLast(Turn(question, remembered))
         while (history.size > MAX_HISTORY) history.removeFirst()
       }
       awaitSpeechEnd()
@@ -1305,7 +1311,10 @@ object Engine {
           "pas toute la procédure. Tu peux regarder ce que l'utilisateur a devant les yeux avec " +
           "l'outil regarder, mais seulement quand la question l'exige ; dans ce cas, appelle-le " +
           "directement sans rien dire avant. Ne décris pas l'image si on ne te le demande pas. " +
-          "Si l'objet de la question n'est pas visible ou pas lisible, dis-le."
+          "Si l'objet de la question n'est pas visible ou pas lisible, dis-le. Les réponses " +
+          "précédentes marquées comme données en regardant une photo s'appuyaient sur une " +
+          "image réelle que tu ne revois pas : ne les remets pas en cause pour cette raison, et " +
+          "ne répète jamais ce marqueur à voix haute."
 
   private fun cleanForSpeech(text: String): String =
       text.replace(Regex("[*#`_>|]"), "").replace(Regex("\\s+"), " ").trim()
