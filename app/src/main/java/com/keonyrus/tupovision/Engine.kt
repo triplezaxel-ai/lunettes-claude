@@ -150,6 +150,7 @@ object Engine {
   private const val MAX_LOG = 200
   private const val PHOTO_TIMEOUT_MS = 3000L
   private const val STREAM_WAIT_MS = 10_000L
+  private const val CAMERA_WAIT_MS = 6_000L
   private const val GEMINI_KEY = "gemini_api_key"
   // Lighter than the per-question frame: one of these goes up every second.
   private const val LIVE_JPEG_QUALITY = 65
@@ -177,7 +178,7 @@ object Engine {
   private var stream: Stream? = null
   private val sessionJobs = ArrayList<Job>()
   private var sessionStarted = false
-  private var streaming = false
+  @Volatile private var streaming = false
   private var serviceStarted = false
 
   // Voice
@@ -647,7 +648,8 @@ object Engine {
     when (value) {
       DeviceSessionState.STARTED -> {
         sessionStarted = true
-        if (camera == null) attachCamera(current) else resumeIfReady()
+        // The camera stays off: it is switched on only when Claude asks to look.
+        resumeIfReady()
       }
       DeviceSessionState.PAUSED -> {
         sessionStarted = false
@@ -663,7 +665,16 @@ object Engine {
     }
   }
 
-  private fun attachCamera(current: DeviceSession) {
+  private val cameraJobs = mutableListOf<Job>()
+
+  /**
+   * Switches the glasses camera on for one picture. The stream runs only for these few seconds,
+   * which spares the glasses' battery and keeps the camera light off the rest of the time.
+   */
+  private suspend fun openCamera(): Boolean {
+    if (stream != null && streaming) return true
+    val current = session ?: return false
+    var ok = false
     current
         .addCamera(StreamConfiguration(videoQuality = VideoQuality.HIGH, frameRate = 7))
         .fold(
@@ -671,35 +682,46 @@ object Engine {
               camera = added
               val video = added.stream
               stream = video
-              sessionJobs +=
+              cameraJobs +=
                   scope.launch(Dispatchers.Default) {
                     video.videoStream.collect { frame -> Frames.offer(frame) }
                   }
-              sessionJobs += scope.launch { video.state.collect { onStreamState(it) } }
-              sessionJobs +=
+              cameraJobs += scope.launch { video.state.collect { onStreamState(it) } }
+              cameraJobs +=
                   scope.launch {
                     video.errorStream.collect { error ->
-                      log("Video stream error: ${error.description}")
+                      log("Caméra : ${error.description}")
                     }
                   }
               video.start().onFailure { error, _ ->
-                log("Video stream did not start: ${error.description}")
+                log("La caméra n'a pas démarré : ${error.description}")
               }
-              // Voice still works if the picture never arrives; say so and carry on without it.
-              sessionJobs +=
-                  scope.launch {
-                    delay(STREAM_WAIT_MS)
-                    if (_state.value.running && !streaming && !voiceActive) {
-                      log("No video from the glasses after 10 seconds, continuing without it")
-                      startVoice()
-                    }
-                  }
+              ok = true
             },
-            onFailure = { error, _ ->
-              fail("Caméra des lunettes indisponible : ${error.description}")
-              shutdown()
-            },
+            onFailure = { error, _ -> log("Caméra des lunettes indisponible : ${error.description}") },
         )
+    if (!ok) return false
+    withTimeoutOrNull(CAMERA_WAIT_MS) { while (!streaming) delay(100) }
+    if (!streaming) {
+      log("Pas d'image de la caméra après ${CAMERA_WAIT_MS / 1000} s")
+      closeCamera()
+      return false
+    }
+    // The first frames come before exposure settles: give it a moment.
+    delay(700)
+    return true
+  }
+
+  /** Switches the camera off again right after the picture. */
+  private fun closeCamera() {
+    cameraJobs.forEach { it.cancel() }
+    cameraJobs.clear()
+    val old = camera
+    camera = null
+    stream = null
+    streaming = false
+    Frames.reset()
+    if (old != null) runCatching { old.stop() }
   }
 
   private fun onStreamState(value: StreamState) {
@@ -711,10 +733,7 @@ object Engine {
       }
       // A single tap on the temple pauses the stream and a second one resumes it; the
       // conversation follows, which makes the tap a hands-free pause button.
-      StreamState.PAUSED -> {
-        streaming = false
-        pauseVoice("En pause. Touche la branche pour reprendre")
-      }
+      StreamState.PAUSED -> streaming = false
       StreamState.STOPPED,
       StreamState.CLOSED -> streaming = false
       else -> Unit
@@ -722,7 +741,7 @@ object Engine {
   }
 
   private fun resumeIfReady() {
-    if (_state.value.running && sessionStarted && streaming && !voiceActive) startVoice()
+    if (_state.value.running && sessionStarted && !voiceActive) startVoice()
   }
 
   private fun shutdown() {
@@ -1189,7 +1208,8 @@ object Engine {
       if (looked && lookId != null) {
         log("Claude demande à regarder")
         update { it.copy(phase = Phase.THINKING) }
-        val jpeg = withContext(Dispatchers.Default) { acquireFrame() }
+        // Camera on and off runs on the main thread, like every other session call.
+        val jpeg = acquireFrame()
         val preview = withContext(Dispatchers.Default) { jpeg?.let { Frames.preview(it) } }
         update { it.copy(frame = preview, frameInfo = Frames.info) }
         if (jpeg == null) log("Pas d'image des lunettes")
@@ -1275,6 +1295,15 @@ object Engine {
 
   /** Runs off the main thread. Video frames are instant; a photo is sharper but takes longer. */
   private suspend fun acquireFrame(): ByteArray? {
+    if (!openCamera()) return null
+    try {
+      return withContext(Dispatchers.Default) { grabFrame() }
+    } finally {
+      closeCamera()
+    }
+  }
+
+  private suspend fun grabFrame(): ByteArray? {
     val photoFirst = _state.value.photoMode
     if (photoFirst) capturePhotoJpeg()?.let { return it }
     Frames.latestJpeg()?.let { return it }
