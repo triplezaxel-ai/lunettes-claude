@@ -512,14 +512,6 @@ private fun SettingsSection(state: UiState) {
         enabled = !state.running,
         modifier = Modifier.fillMaxWidth(),
     )
-    OutlinedTextField(
-        value = state.wakeWord,
-        onValueChange = { Engine.setWakeWord(it) },
-        label = { Text("Mot d'appel (facultatif)") },
-        supportingText = { Text("Si rempli, seules les phrases contenant ce mot sont envoyées.") },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-    )
   }
 }
 

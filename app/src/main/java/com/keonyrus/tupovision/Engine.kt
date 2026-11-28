@@ -212,6 +212,10 @@ object Engine {
     }
     update { it.copy(version = version) }
     log("—— Démarrage de l'app, version $version ——")
+    if (!prefs().getString("wake_word", "").isNullOrEmpty()) {
+      prefs().edit().remove("wake_word").apply()
+      log("Mot d'appel supprimé : toutes les phrases sont désormais envoyées")
+    }
     val prefs = prefs()
     update {
       it.copy(
@@ -228,7 +232,8 @@ object Engine {
           partnerLanguage = prefs.getString("partner_language", "ko-KR") ?: "ko-KR",
           glassesMic = prefs.getBoolean("glasses_mic", true),
           photoMode = prefs.getBoolean("photo_mode", false),
-          wakeWord = prefs.getString("wake_word", "") ?: "",
+          // The gesture opens the conversation: a wake word only made phrases disappear.
+          wakeWord = "",
           language = prefs.getString("language", null) ?: "fr-FR",
           geminiKeySet = SecureStore.get(app, GEMINI_KEY) != null,
           liveMode = prefs.getBoolean("live_mode", false),
